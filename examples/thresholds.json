@@ -1,0 +1,14 @@
+{
+  "score_drop": 0.08,
+  "latency_regression_pct": 25,
+  "cost_regression_pct": 25,
+  "fail_on_new_failures": true,
+  "fail_on_score_drops": true,
+  "fail_on_category_drift": false,
+  "fail_on_model_changes": false,
+  "fail_on_latency_regressions": false,
+  "fail_on_cost_regressions": true,
+  "fail_on_missing_cases": true,
+  "fail_on_new_cases": false
+}
+
