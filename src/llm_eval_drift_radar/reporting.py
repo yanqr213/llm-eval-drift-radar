@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from typing import Any, Dict, List, Optional, TextIO
+from xml.etree import ElementTree as ET
 
 from .core import CaseDiff, ComparisonResult, EvalRecord
 
@@ -30,6 +31,17 @@ CSV_FIELDS = (
     "cost_delta_pct",
 )
 
+JUNIT_FAILURE_SIGNALS = {
+    "fail_on_new_failures": "new_failure",
+    "fail_on_score_drops": "score_drop",
+    "fail_on_category_drift": "category_drift",
+    "fail_on_model_changes": "model_change",
+    "fail_on_latency_regressions": "latency_regression",
+    "fail_on_cost_regressions": "cost_regression",
+    "fail_on_missing_cases": "missing_case",
+    "fail_on_new_cases": "new_case",
+}
+
 
 def render(result: ComparisonResult, output_format: str) -> str:
     if output_format == "json":
@@ -38,6 +50,8 @@ def render(result: ComparisonResult, output_format: str) -> str:
         return render_csv(result)
     if output_format == "markdown":
         return render_markdown(result)
+    if output_format == "junit":
+        return render_junit(result)
     raise ValueError(f"unsupported output format {output_format!r}")
 
 
@@ -118,6 +132,56 @@ def render_markdown(result: ComparisonResult) -> str:
     return "\n".join(lines)
 
 
+def render_junit(result: ComparisonResult) -> str:
+    failing_signals = {
+        signal for flag, signal in JUNIT_FAILURE_SIGNALS.items() if bool(result.thresholds.get(flag))
+    }
+    failing_cases = [
+        case for case in result.cases if _case_failure_signals(case, failing_signals)
+    ]
+    suite = ET.Element(
+        "testsuite",
+        {
+            "name": "llm-eval-drift-radar",
+            "tests": str(len(result.cases)),
+            "failures": str(len(failing_cases)),
+            "errors": "0",
+            "skipped": "0",
+        },
+    )
+    properties = ET.SubElement(suite, "properties")
+    for key, value in sorted(result.summary.items()):
+        ET.SubElement(properties, "property", {"name": str(key), "value": _junit_value(value)})
+
+    for case in result.cases:
+        testcase = ET.SubElement(
+            suite,
+            "testcase",
+            {
+                "classname": "llm_eval_drift_radar.drift",
+                "name": case.case_id,
+                "time": _junit_time(case),
+            },
+        )
+        case_properties = ET.SubElement(testcase, "properties")
+        for key, value in _case_junit_properties(case).items():
+            ET.SubElement(case_properties, "property", {"name": key, "value": value})
+
+        failure_signals = _case_failure_signals(case, failing_signals)
+        if failure_signals:
+            failure = ET.SubElement(
+                testcase,
+                "failure",
+                {
+                    "type": "llm_eval_drift_radar.drift",
+                    "message": f"{case.status}: {', '.join(failure_signals)}",
+                },
+            )
+            failure.text = _case_failure_text(case, failure_signals)
+
+    return "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" + ET.tostring(suite, encoding="unicode") + "\n"
+
+
 def write_output(text: str, output_path: Optional[str], stream: Optional[TextIO] = None) -> None:
     if output_path:
         parent = os.path.dirname(output_path)
@@ -182,6 +246,58 @@ def _case_csv_row(case: CaseDiff) -> Dict[str, Any]:
         "current_cost_usd": _blankable(None if cur is None else cur.cost_usd),
         "cost_delta_pct": _blankable(case.cost_delta_pct),
     }
+
+
+def _case_failure_signals(case: CaseDiff, failing_signals: set[str]) -> List[str]:
+    return [signal for signal in case.signals if signal in failing_signals]
+
+
+def _case_junit_properties(case: CaseDiff) -> Dict[str, str]:
+    return {
+        "status": case.status,
+        "signals": ",".join(case.signals),
+        "baseline_pass": _bool(case.baseline),
+        "current_pass": _bool(case.current),
+        "score_delta": _blankable(case.score_delta),
+        "baseline_model": _model(case.baseline),
+        "current_model": _model(case.current),
+        "baseline_category": _category(case.baseline),
+        "current_category": _category(case.current),
+        "latency_delta_pct": _blankable(case.latency_delta_pct),
+        "cost_delta_pct": _blankable(case.cost_delta_pct),
+    }
+
+
+def _case_failure_text(case: CaseDiff, failure_signals: List[str]) -> str:
+    lines = [
+        f"case_id: {case.case_id}",
+        f"status: {case.status}",
+        f"failure_signals: {', '.join(failure_signals)}",
+        f"all_signals: {', '.join(case.signals) or '-'}",
+        f"pass: {_transition(_bool(case.baseline), _bool(case.current))}",
+        f"score_delta: {_fmt_signed(case.score_delta)}",
+        f"category: {_transition(_category(case.baseline), _category(case.current))}",
+        f"model: {_transition(_model(case.baseline), _model(case.current))}",
+        f"latency_delta: {_fmt_pct_delta(case.latency_delta_pct)}",
+        f"cost_delta: {_fmt_pct_delta(case.cost_delta_pct)}",
+    ]
+    return "\n".join(lines)
+
+
+def _junit_time(case: CaseDiff) -> str:
+    record = case.current or case.baseline
+    latency_ms = None if record is None else record.latency_ms
+    if latency_ms is None:
+        return "0"
+    return f"{latency_ms / 1000:.6g}"
+
+
+def _junit_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(item) for item in value)
+    return str(value)
 
 
 def _blankable(value: Optional[float]) -> str:

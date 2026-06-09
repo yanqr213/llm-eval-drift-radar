@@ -39,3 +39,10 @@ jobs:
             --format markdown \
             --output llm-eval-drift-report.md
           test -s llm-eval-drift-report.md
+          python -m llm_eval_drift_radar \
+            --baseline examples/baseline.jsonl \
+            --current examples/current.jsonl \
+            --thresholds examples/thresholds.json \
+            --format junit \
+            --output llm-eval-drift-report.xml
+          test -s llm-eval-drift-report.xml

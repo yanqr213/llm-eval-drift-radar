@@ -5,10 +5,11 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from xml.etree import ElementTree as ET
 
 from llm_eval_drift_radar.cli import main
 from llm_eval_drift_radar.core import EvalRecord, compare_runs
-from llm_eval_drift_radar.reporting import render_csv, render_json, render_markdown
+from llm_eval_drift_radar.reporting import render_csv, render_json, render_junit, render_markdown
 
 
 class ReportingTests(unittest.TestCase):
@@ -44,6 +45,26 @@ class ReportingTests(unittest.TestCase):
     def test_markdown_escapes_pipe_in_case_id(self):
         result = compare_runs([EvalRecord(case_id="a|b")], [EvalRecord(case_id="a|b")])
         self.assertIn("a\\|b", render_markdown(result))
+
+    def test_render_junit_marks_configured_failures(self):
+        suite = ET.fromstring(render_junit(self.result()))
+        self.assertEqual(suite.tag, "testsuite")
+        self.assertEqual(suite.attrib["tests"], "2")
+        self.assertEqual(suite.attrib["failures"], "1")
+        failure = suite.find("./testcase[@name='a']/failure")
+        self.assertIsNotNone(failure)
+        self.assertIn("new_failure", failure.attrib["message"])
+        self.assertIn("score_delta", failure.text)
+
+    def test_render_junit_honors_threshold_policy(self):
+        result = compare_runs(
+            [EvalRecord(case_id="a", score=1.0, passed=True)],
+            [EvalRecord(case_id="a", score=0.5, passed=True)],
+            {"fail_on_score_drops": False},
+        )
+        suite = ET.fromstring(render_junit(result))
+        self.assertEqual(suite.attrib["failures"], "0")
+        self.assertIsNone(suite.find("./testcase/failure"))
 
 
 class CliTests(unittest.TestCase):
@@ -119,6 +140,16 @@ class CliTests(unittest.TestCase):
             code = main(["--baseline", baseline, "--current", current, "--format", "json"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(buffer.getvalue())["summary"]["total_cases"], 1)
+
+    def test_cli_junit_format(self):
+        baseline = self.write_temp(".jsonl", '{"case_id":"a","score":1,"pass":true}\n')
+        current = self.write_temp(".jsonl", '{"case_id":"a","score":0.1,"pass":false}\n')
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = main(["--baseline", baseline, "--current", current, "--format", "junit"])
+        self.assertEqual(code, 0)
+        suite = ET.fromstring(buffer.getvalue())
+        self.assertEqual(suite.attrib["failures"], "1")
 
     def test_cli_thresholds_file_changes_check_result(self):
         baseline = self.write_temp(".jsonl", '{"case_id":"a","score":1,"pass":true}\n')

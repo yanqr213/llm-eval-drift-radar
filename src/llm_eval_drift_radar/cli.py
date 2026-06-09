@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current", required=True, help="Current eval result file (.jsonl or .csv).")
     parser.add_argument(
         "--format",
-        choices=("markdown", "json", "csv"),
+        choices=("markdown", "json", "csv", "junit"),
         default="markdown",
         help="Report output format.",
     )
@@ -55,4 +55,3 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.check and result.should_fail:
         return 1
     return 0
-

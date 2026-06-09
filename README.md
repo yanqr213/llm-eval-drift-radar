@@ -1,6 +1,6 @@
 # llm-eval-drift-radar
 
-`llm-eval-drift-radar` 是一个零运行时依赖的 Python CLI，用来比较两次 LLM eval 结果，定位用例级回归、分类/标签漂移、模型版本变化、评分波动、延迟和成本回归，并生成可以进入 PR 评论或 CI artifact 的 Markdown / JSON / CSV 报告。
+`llm-eval-drift-radar` 是一个零运行时依赖的 Python CLI，用来比较两次 LLM eval 结果，定位用例级回归、分类/标签漂移、模型版本变化、评分波动、延迟和成本回归，并生成可以进入 PR 评论、CI artifact 或测试结果面板的 Markdown / JSON / CSV / JUnit XML 报告。
 
 它面向已经在跑 LLM eval 的开发者和团队：你可能每天在 CI 里比较 main 分支与当前 PR，或者在模型升级、prompt 调整、RAG 索引更新后确认有没有隐藏退化。这个工具只读取本地文件，不联网，不读取 GitHub token，也不推送任何内容。
 
@@ -10,7 +10,7 @@
 - 按 `case_id` 对齐，识别新增、缺失和共同用例。
 - 检测新失败、修复、分数下降、类别/标签漂移、模型变化、延迟回归、成本回归。
 - 支持 thresholds JSON 配置阈值和 CI 失败策略。
-- 输出 Markdown、JSON、CSV。
+- 输出 Markdown、JSON、CSV、JUnit XML。
 - `--check` 模式可在发现配置的失败条件时返回退出码 `1`，适合 CI gating。
 - 只使用 Python 标准库，离线可运行。
 
@@ -97,6 +97,17 @@ python -m llm_eval_drift_radar \
   --output report.csv
 ```
 
+生成 JUnit XML，方便 CI 展示失败用例：
+
+```bash
+python -m llm_eval_drift_radar \
+  --baseline examples/baseline.jsonl \
+  --current examples/current.jsonl \
+  --thresholds examples/thresholds.json \
+  --format junit \
+  --output llm-eval-drift-report.xml
+```
+
 CI check 模式：
 
 ```bash
@@ -153,6 +164,8 @@ JSON 报告包含：
 
 CSV 报告是一行一个 case，适合导入表格或 BI。
 
+JUnit XML 报告是一条 eval case 对应一个 testcase。只有 thresholds 中配置为失败策略的信号会生成 `<failure>`，因此它和 `--check` 的判断语义一致，适合上传为 CI 测试结果或 artifact。
+
 ## GitHub Actions / CI
 
 仓库内置 `.github/workflows/ci.yml`，会运行单元测试和示例 check。你可以在自己的 eval 流程中先产出两份结果文件，再调用：
@@ -165,14 +178,28 @@ CSV 报告是一行一个 case，适合导入表格或 BI。
       --current artifacts/current.jsonl \
       --thresholds examples/thresholds.json \
       --format markdown \
-      --output llm-eval-drift-report.md \
+      --output llm-eval-drift-report.md
+    python -m llm_eval_drift_radar \
+      --baseline artifacts/baseline.jsonl \
+      --current artifacts/current.jsonl \
+      --thresholds examples/thresholds.json \
+      --format junit \
+      --output llm-eval-drift-report.xml
+    python -m llm_eval_drift_radar \
+      --baseline artifacts/baseline.jsonl \
+      --current artifacts/current.jsonl \
+      --thresholds examples/thresholds.json \
+      --quiet \
       --check
 
 - name: Upload drift report
+  if: always()
   uses: actions/upload-artifact@v4
   with:
     name: llm-eval-drift-report
-    path: llm-eval-drift-report.md
+    path: |
+      llm-eval-drift-report.md
+      llm-eval-drift-report.xml
 ```
 
 如果你希望模型变化或类别漂移也阻塞 PR，把 thresholds 里的 `fail_on_model_changes` 或 `fail_on_category_drift` 设为 `true`。
@@ -205,7 +232,7 @@ PYTHONPATH=src python -m llm_eval_drift_radar \
 
 ## English
 
-`llm-eval-drift-radar` is a dependency-free Python CLI for comparing two LLM evaluation runs. It aligns records by `case_id`, detects case-level regressions and drift, and emits Markdown, JSON, or CSV reports that can be used in pull requests and CI pipelines.
+`llm-eval-drift-radar` is a dependency-free Python CLI for comparing two LLM evaluation runs. It aligns records by `case_id`, detects case-level regressions and drift, and emits Markdown, JSON, CSV, or JUnit XML reports that can be used in pull requests and CI pipelines.
 
 ### Who It Is For
 
@@ -217,7 +244,7 @@ This project is for developers and teams that already run LLM evals and need a r
 - Aligns cases by stable `case_id`.
 - Detects new failures, fixes, score drops, category drift, model changes, latency regressions, cost regressions, new cases, and missing cases.
 - Supports a thresholds JSON file for regression thresholds and CI failure policy.
-- Outputs Markdown, JSON, or CSV.
+- Outputs Markdown, JSON, CSV, or JUnit XML.
 - Provides `--check` mode with CI-friendly exit codes.
 - Uses only the Python standard library and works offline.
 
@@ -245,6 +272,17 @@ python -m llm_eval_drift_radar \
   --format markdown
 ```
 
+Generate JUnit XML for CI test views:
+
+```bash
+python -m llm_eval_drift_radar \
+  --baseline examples/baseline.jsonl \
+  --current examples/current.jsonl \
+  --thresholds examples/thresholds.json \
+  --format junit \
+  --output llm-eval-drift-report.xml
+```
+
 Use check mode in CI:
 
 ```bash
@@ -261,6 +299,8 @@ Exit codes:
 - `0`: success, and no configured failure condition in `--check` mode.
 - `1`: success, but configured failure conditions were found in `--check` mode.
 - `2`: input, parsing, or argument error.
+
+JUnit XML maps each eval case to one testcase. Only signals enabled by the thresholds failure policy are emitted as `<failure>` nodes, so the XML failure count matches the same policy used by `--check`.
 
 ### Input Schema
 
@@ -283,4 +323,3 @@ Recommended fields:
 ### Privacy And Security
 
 The tool only reads files you explicitly pass in. It does not access the network, does not call model APIs, does not read GitHub tokens or other secrets from the environment, and does not push to GitHub. Reports may include sensitive eval content from your input files, so sanitize inputs before publishing reports outside your trusted environment.
-
